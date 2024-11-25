@@ -1,0 +1,48 @@
+
+name: Create-Base-Project
+
+# Controls when the action will run. Workflow runs when manually triggered using the UI
+# or API.
+on:
+  workflow_dispatch:
+    # Inputs the workflow accepts.
+    inputs:
+      applicationName:
+        description: 'Anypoint Application Name'
+        required: true        
+        
+jobs:
+  createBaseProject:
+    runs-on: [self-hosted, Linux, prod]
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up JDK 1.8
+      uses: actions/setup-java@v1
+      with:
+        java-version: 1.8
+    - name: Set Maven Action
+      uses: s4u/setup-maven-action@v1.7.0
+      with:
+        java-version: 8.0
+        maven-version: 3.8.7
+    - run: mvn -v
+    - name: Install artifact into local repo
+      run: |
+        mvn install:install-file -Dfile=$GITHUB_WORKSPACE/.github/template/application-template-archetype-1.0.1.jar -DgroupId=com.wesco -DartifactId=application-template-archetype -Dversion=1.0.1 -Dpackaging=jar
+    - name: Create base project
+      run: |
+        mvn archetype:generate -DarchetypeGroupId=com.wesco -DarchetypeArtifactId=application-template-archetype -DarchetypeVersion=1.0.1 -DgroupId=com.wesco -DartifactId=${{github.event.inputs.applicationName}} -Dpackage=com.wesco -Dversion=1.0.0 -B
+    - name: Push the project to branch
+      run: |        
+        mv -v $GITHUB_WORKSPACE/${{github.event.inputs.applicationName}}/* $GITHUB_WORKSPACE/
+        mv -v $GITHUB_WORKSPACE/${{github.event.inputs.applicationName}}/.project $GITHUB_WORKSPACE/
+        mv -v $GITHUB_WORKSPACE/${{github.event.inputs.applicationName}}/.classpath $GITHUB_WORKSPACE/
+        rm -rf $GITHUB_WORKSPACE/${{github.event.inputs.applicationName}}
+        cd $GITHUB_WORKSPACE
+        git config --global init.defaultBranch ${{ github.head_ref || github.ref_name }}        
+        git config --global user.email "mule@wescodist.com"
+        git config --global user.name "Mule"
+        # Stage the file, commit and push        
+        git add .
+        git commit -m "commit base project code"        
+        git push -u origin ${{ github.head_ref || github.ref_name }}

@@ -1,0 +1,180 @@
+# This workflow will build a MuleSoft project and deploy to CloudHub Development and Integration Environments
+
+name: UAT-EI
+
+# Controls when the action will run. Workflow runs when manually triggered using the UI
+# or API.
+on:
+  workflow_dispatch:
+    # Inputs the workflow accepts.
+    inputs:
+      businessGroup:
+        description: 'Anypoint Business Group'
+        default: 'Wesco\WESCO-EI'
+        required: true
+      environment:
+        description: 'Non Prod Environment Name'
+        default: 'UAT-EI'
+        required: true
+      applicationName:
+        description: 'Anypoint Application Name'
+        default: 'wesco-'
+        required: true
+       
+jobs:
+  buildUAT:
+    runs-on: [self-hosted, Linux, prod]
+    if: github.ref != 'refs/heads/main' && contains(github.event.inputs.environment,'UAT-EI')
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ runner.os }}-maven-
+    - name: Set up JDK 1.8
+      uses: actions/setup-java@v1
+      with:
+        java-version: 1.8
+    - name: Set Maven Action
+      uses: s4u/setup-maven-action@v1.7.0
+      with:
+        java-version: 8.0
+        maven-version: 3.8.7
+    - name: Get current timestamp
+      run: echo "commitHash=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
+    - name: Get Secrets from Azure Vault
+      run: |
+            curl --cacert $GITHUB_WORKSPACE/.github/workflows/keystore.pem --location --request POST 'https://apiuat.wesco.com/wesco-azure-keyvault-sapi/api/v1/getSecret' \
+            --header 'client_id: ${{ secrets.CLIENT_ID_UAT }}' \
+            --header 'client_secret: ${{ secrets.CLIENT_SECRET_UAT }}' \
+            --header 'Content-Type: application/json' \
+            --data-raw '[{"key": "anypoint-user"},{"key": "anypoint-pass"},{"key": "mule-key"},{"key": "nexus-user"},{"key": "nexus-pass"},{"key": "ANYPOINT-CLIENT-ID-UAT"},{"key": "ANYPOINT-CLIENT-SECRET-UAT"}]' -o apiResp.json
+            secretKey=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bmule-key\\b")) | .value')
+            echo "::add-mask::$secretKey"
+            echo "secretKey=$secretKey" >> $GITHUB_ENV
+            MULE_NEXUS_USER=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bnexus-user\\b")) | .value')
+            echo "::add-mask::$MULE_NEXUS_USER"
+            echo "MULE_NEXUS_USER=$MULE_NEXUS_USER" >> $GITHUB_ENV
+            MULE_NEXUS_PASSWORD=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bnexus-pass\\b")) | .value')
+            echo "::add-mask::$MULE_NEXUS_PASSWORD"
+            echo "MULE_NEXUS_PASSWORD=$MULE_NEXUS_PASSWORD" >> $GITHUB_ENV
+            ANYPOINT_USERNAME=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\banypoint-user\\b")) | .value')
+            echo "::add-mask::$ANYPOINT_USERNAME"
+            echo "ANYPOINT_USERNAME=$ANYPOINT_USERNAME" >> $GITHUB_ENV
+            ANYPOINT_PASSWORD=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\banypoint-pass\\b")) | .value')
+            echo "::add-mask::$ANYPOINT_PASSWORD"
+            echo "ANYPOINT_PASSWORD=$ANYPOINT_PASSWORD" >> $GITHUB_ENV
+            ANYPOINT_PLATFORM_CLIENT_ID=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bANYPOINT-CLIENT-ID-UAT\\b")) | .value')
+            echo "::add-mask::$ANYPOINT_PLATFORM_CLIENT_ID"
+            echo "ANYPOINT_PLATFORM_CLIENT_ID=$ANYPOINT_PLATFORM_CLIENT_ID" >> $GITHUB_ENV
+            ANYPOINT_PLATFORM_CLIENT_SECRET=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bANYPOINT-CLIENT-SECRET-UAT\\b")) | .value')
+            echo "::add-mask::$ANYPOINT_PLATFORM_CLIENT_SECRET"
+            echo "ANYPOINT_PLATFORM_CLIENT_SECRET=$ANYPOINT_PLATFORM_CLIENT_SECRET" >> $GITHUB_ENV
+    - name: Build
+      env:
+        GITHUB_USER: ${{ github.actor }}
+        GITHUB_TOKEN: ${{ secrets.github_token }}
+        env: uat
+      run: mvn -s $GITHUB_WORKSPACE/.github/workflows/settings.xml -B package --file pom.xml
+    - name: Stamp artifact file name with commit hash
+      run: | 
+        artifactName1=$(ls target/*.jar | head -1)
+        artifactName2=$(ls target/*.jar | head -1 | sed "s/.jar/.$commitHash.jar/g")
+        mv $artifactName1 $artifactName2
+    - uses: actions/upload-artifact@main
+      with:
+          name: artifacts
+          path: target/*.jar
+ 
+  deployUAT:
+    needs:
+         - buildUAT
+    runs-on: [self-hosted, Linux, prod]
+    if: github.ref != 'refs/heads/main' && contains(github.event.inputs.environment,'UAT-EI')
+    steps:    
+    - uses: actions/checkout@v2
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ runner.os }}-maven-
+    - name: Set Maven Action
+      uses: s4u/setup-maven-action@v1.7.0
+      with:
+        java-version: 8.0
+        maven-version: 3.8.7
+    - uses: actions/download-artifact@main
+      with:
+        name: artifacts
+    - name: Get Secrets from Azure Vault
+      run: |
+            curl --cacert $GITHUB_WORKSPACE/.github/workflows/keystore.pem --location --request POST 'https://apiuat.wesco.com/wesco-azure-keyvault-sapi/api/v1/getSecret' \
+            --header 'client_id: ${{ secrets.CLIENT_ID_UAT }}' \
+            --header 'client_secret: ${{ secrets.CLIENT_SECRET_UAT }}' \
+            --header 'Content-Type: application/json' \
+            --data-raw '[{"key": "anypoint-user"},{"key": "anypoint-pass"},{"key": "mule-key"},{"key": "nexus-user"},{"key": "nexus-pass"},{"key": "ANYPOINT-CLIENT-ID-UAT"},{"key": "ANYPOINT-CLIENT-SECRET-UAT"}]' -o apiResp.json
+            SECRET_KEY=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bmule-key\\b")) | .value')
+            echo "::add-mask::$SECRET_KEY"
+            echo "SECRET_KEY=$SECRET_KEY" >> $GITHUB_ENV
+            ANYPOINT_USERNAME=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\banypoint-user\\b")) | .value')
+            echo "::add-mask::$ANYPOINT_USERNAME"
+            echo "ANYPOINT_USERNAME=$ANYPOINT_USERNAME" >> $GITHUB_ENV
+            ANYPOINT_PASSWORD=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\banypoint-pass\\b")) | .value')
+            echo "::add-mask::$ANYPOINT_PASSWORD"
+            echo "ANYPOINT_PASSWORD=$ANYPOINT_PASSWORD" >> $GITHUB_ENV
+            ANYPOINT_PLATFORM_CLIENT_ID=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bANYPOINT-CLIENT-ID-UAT\\b")) | .value')
+            echo "::add-mask::$ANYPOINT_PLATFORM_CLIENT_ID"
+            echo "ANYPOINT_PLATFORM_CLIENT_ID=$ANYPOINT_PLATFORM_CLIENT_ID" >> $GITHUB_ENV
+            ANYPOINT_PLATFORM_CLIENT_SECRET=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bANYPOINT-CLIENT-SECRET-UAT\\b")) | .value')
+            echo "::add-mask::$ANYPOINT_PLATFORM_CLIENT_SECRET"
+            echo "ANYPOINT_PLATFORM_CLIENT_SECRET=$ANYPOINT_PLATFORM_CLIENT_SECRET" >> $GITHUB_ENV
+    - name: Deploy to CloudHub
+      env:
+        GITHUB_USER: ${{ github.actor }}
+        GITHUB_TOKEN: ${{ secrets.github_token }}
+        BUSINESS_GROUP: ${{github.event.inputs.businessGroup}}
+        ANYPOINT_ENVIRONMENT: ${{github.event.inputs.environment}}
+        WORKER_TYPE: MICRO
+        WORKERS: 1
+        CONFIG_ENVIRONMENT: uat
+        APPLICATION_NAME: ${{ github.event.inputs.applicationName}}-uat
+        REQUIRED_APPLICATION_COVERAGE: 90
+        REQUIRED_RESOURCE_COVERAGE: 90
+        REQUIRED_FLOW_COVERAGE: 90
+        
+      run: |
+        artifactName=$(ls *.jar | head -1)
+        mvn mule:deploy -Dmule.artifact=$artifactName
+
+  snow:
+    needs:
+         - deployUAT
+    runs-on: [self-hosted, Linux, prod]
+    if: github.ref != 'refs/heads/main' && contains(github.event.inputs.environment,'UAT-EI')
+    steps:    
+    - uses: actions/checkout@v2
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ runner.os }}-maven-
+    - name: Get Secrets from Azure Vault
+      run: |
+            curl --cacert $GITHUB_WORKSPACE/.github/workflows/keystore.pem --location --request POST 'https://apiuat.wesco.com/wesco-azure-keyvault-sapi/api/v1/getSecret' \
+            --header 'client_id: ${{ secrets.CLIENT_ID_UAT }}' \
+            --header 'client_secret: ${{ secrets.CLIENT_SECRET_UAT }}' \
+            --header 'Content-Type: application/json' \
+            --data-raw '[{"key": "SN-user"},{"key": "SN-pass"}]' -o apiResp.json            
+            snuser=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bSN-user\\b")) | .value')
+            snpass=$(cat apiResp.json | jq -r '.[] | select(.id|test("\\bSN-pass\\b")) | .value')
+            echo "::add-mask::$snuser"
+            echo "SNOW_USER=$snuser" >> $GITHUB_ENV
+            echo "::add-mask::$snpass"
+            echo "SNOW_PASS=$snpass" >> $GITHUB_ENV
+    - name: Invoke SNOW REST API
+      run: |
+            curl -u $SNOW_USER:$SNOW_PASS -d "{\"short_description\":\"This Change Ticket is to deploy the Jar of ${{ github.event.inputs.applicationName}}\", \"description\":\"This Change Ticket is to deploy the Jar of ${{ github.event.inputs.applicationName}}\", \"type\": \"normal\", \"assignment_group\":\"Snow_MuleSoft_Platform_Admin\"}" -H "Content-Type:application/json" -X POST https://assistmeuat.service-now.com/api/now/v2/table/change_request -v --basic
